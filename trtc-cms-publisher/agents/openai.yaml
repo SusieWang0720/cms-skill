@@ -1,0 +1,4 @@
+interface:
+  display_name: "TRTC CMS Publisher"
+  short_description: "Import Markdown articles into Tencent RTC CMS."
+  default_prompt: "Publish or import a blog article into Tencent RTC CMS from Markdown content or a local file."
