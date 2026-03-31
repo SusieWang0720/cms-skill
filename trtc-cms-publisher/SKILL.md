@@ -95,6 +95,7 @@ The script will:
 - Use the first Markdown `# Heading` as `title` when `title` is missing
 - Generate a slug from `title` when `route_name` is missing
 - Default `category` to `Products and Solutions` when it is not provided
+- Default `author` to `Tencent RTC` when it is not provided
 - Convert `poster_file` into a base64 data URI automatically
 - Reuse the article slug in the auto-generated poster filename so the file name stays clear and searchable
 - Generate a template-based poster automatically when `poster_right_image` is provided

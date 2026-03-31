@@ -30,6 +30,7 @@ from generate_poster import render_poster
 
 DEFAULT_API_URL = "https://trtc-cms.woa.com/api/import/article"
 DEFAULT_CATEGORY = "Products and Solutions"
+DEFAULT_AUTHOR = "Tencent RTC"
 VALID_LANGUAGES = {"English", "Japanese", "Korean", "Chinese"}
 DISALLOWED_ROUTE_CHARS = set('@#$%^&*<>《》「」{}')
 
@@ -361,7 +362,7 @@ def merge_metadata(frontmatter: dict[str, Any], args: argparse.Namespace, body: 
         "seo_keys": seo_keys,
         "category": args.category or frontmatter.get("category") or DEFAULT_CATEGORY,
         "labels": labels,
-        "author": args.author or frontmatter.get("author"),
+        "author": args.author or frontmatter.get("author") or DEFAULT_AUTHOR,
         "publishedAt": published_at,
         "poster": poster,
     }
