@@ -43,16 +43,22 @@ Every blog should include a poster that follows the layout in `references/poster
 - Replace the right-side image with an AI-generated blog-relevant scene by default
 - Treat `poster_right_image` as the right-side visual only, not a full poster screenshot
 - Use the article title, description, SEO keywords, and body excerpt to guide the AI scene so the visual matches the article topic
+- Default the AI scene toward realistic, lifestyle-oriented user scenarios that feel clickable and human, not abstract AI concept art
 - Do not generate text inside the right-side scene. The AI image should be scene-only, while the left side continues to hold the title copy
 - Keep `poster_right_image` as a manual override when the user already has a specific right-side image they want to use
 - Name the poster file clearly with the article keywords, preferably using the article slug such as `simultaneous-interpretation-technology-poster.png`
 - Name the AI-generated right-side scene clearly too, preferably using the article slug such as `simultaneous-interpretation-technology-scene.png`
 - Pass the generated poster back through `poster_file`, or let the import script generate it automatically from `poster_right_image`
 - When the article body should begin with the cover image, use a hosted `poster_body_url` in `rich_content` rather than embedding a base64 data URI, otherwise CMS may reject the request as too large
+- The import script now auto-compresses poster uploads before base64 encoding so CMS is less likely to reject the request with `413 Payload Too Large`
+- If the user wants a single-request best effort where the article body starts with the same poster, use `--poster-body-inline`. This duplicates the poster data in the payload, so the script compresses more aggressively in that mode
 - Use keyword-rich alt text for the body cover image based on the article title and leading SEO keywords
 - The AI scene flow uses Tencent Venus's OpenAI-compatible `chat/completions` proxy by default with a Gemini image model
+- The default visual direction is now more human-centered and everyday: believable meetings, conferences, classrooms, livestream viewing, or collaboration scenes with only subtle technology cues
 - Set `VENUS_API_KEY` or `VENUS_TOKEN` before running, or set `ENV_VENUS_OPENAPI_SECRET_ID` and let the script auto-append the default `@3701` suffix
 - Optionally override `VENUS_BASE_URL`, `--poster-image-model`, `--poster-image-size`, or `--poster-image-aspect-ratio`
+- Venus generation includes retries now. If it still fails after retries, fall back to a manual `poster_right_image`
+- If CMS SSL verification fails in the local OA environment, rerun with `--insecure`
 
 Generate a poster directly:
 
@@ -120,14 +126,17 @@ The script will:
 - Default `category` to `Products and Solutions` when it is not provided
 - Default `author` to `Tencent RTC` when it is not provided
 - Convert `poster_file` into a base64 data URI automatically
+- Auto-compress oversized posters before base64 upload so large poster files do not immediately fail CMS import
 - Reuse the article slug in the auto-generated poster filename so the file name stays clear and searchable
 - Reuse the article slug in the AI-generated right-side scene filename so the scene asset stays clear and searchable
 - Generate an AI right-side scene automatically when `poster_right_image` is not provided
 - Let `poster_scene_prompt` add art direction for the AI scene without changing the fixed poster background or left-side title copy
 - Use Tencent Venus `chat/completions` with an image-capable Gemini model to generate the right-side scene, so the flow can run on the company proxy instead of the official OpenAI image endpoint
+- Retry Venus image generation automatically before giving up, then suggest `poster_right_image` as the graceful fallback
 - Support a two-step confirmation flow through `--prepare-only`: first generate the scene and poster assets, show them to the user, then rerun the import after the user confirms the image is acceptable
 - Remove the article H1 from `rich_content` so the title does not appear twice
 - Insert the poster once at the top of `rich_content` before the article body begins when `poster_body_url` is provided
+- Support a best-effort one-shot body cover through `--poster-body-inline` when no hosted `poster_body_url` is available yet
 - Use the article title and SEO keywords to generate a meaningful body-image alt text instead of leaving the image description blank
 - Save as a draft by default when `publishedAt` is omitted
 
@@ -207,6 +216,17 @@ python3 /Users/wangshuoxin/Claude-Internal/CMS/trtc-cms-publisher/scripts/import
   --poster-file /absolute/path/to/generated-poster.png
 ```
 
+Single-request best effort when the article body must start with the poster immediately:
+
+```bash
+VENUS_API_KEY=your_venus_token_here \
+python3 /Users/wangshuoxin/Claude-Internal/CMS/trtc-cms-publisher/scripts/import_article.py \
+  --input /absolute/path/to/article.md \
+  --poster-file /absolute/path/to/generated-poster.png \
+  --poster-body-inline \
+  --insecure
+```
+
 ## Operational Notes
 
 - Default API URL: `https://trtc-cms.woa.com/api/import/article`
@@ -220,6 +240,9 @@ python3 /Users/wangshuoxin/Claude-Internal/CMS/trtc-cms-publisher/scripts/import
 - `title` and `route_name` must be unique within the same language.
 - Valid languages: `English`, `Japanese`, `Korean`, `Chinese`
 - The API accepts Markdown in `rich_content`; it converts to CMS HTML automatically.
+- If CMS returns `413 Payload Too Large`, first rely on the built-in poster auto-compression. If the request is still too large, prefer the two-step flow with a hosted `poster_body_url` instead of duplicating the poster inline in `rich_content`.
+- `--insecure` disables SSL certificate verification for the CMS request only. Use it when the OA environment lacks the internal root certificate.
 - If the command fails because the environment blocks outbound network access, rerun with escalated permissions.
 - If AI scene generation is enabled and the Venus token is missing, the script will stop and ask for either the Venus env vars or a manual `poster_right_image`.
+- No CMS update endpoint is documented in this skill yet, so the script cannot safely patch an existing article after creation. Without an update API, the reliable choices are: use a hosted `poster_body_url`, or use `--poster-body-inline` as a single-request best effort.
 - Do not promise success before reading the API response. Surface API validation errors verbatim when possible.

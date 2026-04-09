@@ -15,15 +15,19 @@ from __future__ import annotations
 
 import argparse
 import base64
+import io
 import json
 import mimetypes
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from PIL import Image
 
 from generate_poster import DEFAULT_IMAGE_ASPECT_RATIO
 from generate_poster import DEFAULT_IMAGE_MODEL
@@ -40,6 +44,8 @@ DEFAULT_CATEGORY = "Products and Solutions"
 DEFAULT_AUTHOR = "Tencent RTC"
 VALID_LANGUAGES = {"English", "Japanese", "Korean", "Chinese"}
 DISALLOWED_ROUTE_CHARS = set('@#$%^&*<>《》「」{}')
+DEFAULT_POSTER_UPLOAD_MAX_BYTES = 220 * 1024
+DEFAULT_POSTER_INLINE_MAX_BYTES = 120 * 1024
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,8 +72,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poster", help="Poster as base64 or a data URI string.")
     parser.add_argument("--poster-file", help="Path to a local poster image file.")
     parser.add_argument(
+        "--poster-upload-max-bytes",
+        type=int,
+        default=DEFAULT_POSTER_UPLOAD_MAX_BYTES,
+        help="Max poster image size in bytes before upload. Oversized posters are auto-compressed.",
+    )
+    parser.add_argument(
         "--poster-body-url",
         help="Hosted poster URL inserted at the top of rich_content. Use this instead of embedding a data URI in the body.",
+    )
+    parser.add_argument(
+        "--poster-body-inline",
+        action="store_true",
+        help="Inline the compressed poster data URI at the top of rich_content for single-request imports.",
     )
     parser.add_argument(
         "--poster-right-image",
@@ -96,8 +113,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poster-image-quality", default=DEFAULT_IMAGE_QUALITY, help="Reserved image quality label for AI poster scenes.")
     parser.add_argument("--poster-image-max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Max output tokens for Venus image generation.")
     parser.add_argument("--poster-image-timeout", type=int, default=90, help="HTTP timeout in seconds for AI poster scene generation.")
+    parser.add_argument("--poster-image-retries", type=int, default=2, help="Retry count for Venus image generation.")
+    parser.add_argument("--poster-image-retry-delay", type=float, default=3.0, help="Delay in seconds between Venus image retries.")
     parser.add_argument("--api-url", default=DEFAULT_API_URL, help="Import API URL.")
     parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout in seconds.")
+    parser.add_argument(
+        "--insecure",
+        "--no-ssl-verify",
+        dest="insecure",
+        action="store_true",
+        help="Disable SSL certificate verification for CMS requests.",
+    )
     parser.add_argument(
         "--prepare-only",
         action="store_true",
@@ -240,12 +266,54 @@ def validate_route_name(route_name: str) -> None:
         raise SystemExit("route_name cannot contain whitespace")
 
 
-def to_data_uri(image_path: str) -> str:
+def flatten_to_rgb(image: Image.Image) -> Image.Image:
+    if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+        rgba = image.convert("RGBA")
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        background.paste(rgba, mask=rgba.getchannel("A"))
+        return background
+    return image.convert("RGB")
+
+
+def compress_image_for_upload(image_path: str, max_bytes: int) -> tuple[bytes, str]:
     path = Path(image_path)
     raw = path.read_bytes()
     mime_type, _ = mimetypes.guess_type(path.name)
     mime_type = mime_type or "image/png"
-    encoded = base64.b64encode(raw).decode("ascii")
+
+    if len(raw) <= max_bytes:
+        return raw, mime_type
+
+    image = Image.open(path)
+    best_bytes: bytes | None = None
+    best_mime_type = "image/jpeg"
+    quality_steps = [88, 82, 76, 70, 64, 58, 52, 46]
+    scale_steps = [1.0, 0.92, 0.84, 0.76, 0.68, 0.6]
+
+    for scale in scale_steps:
+        candidate = flatten_to_rgb(image)
+        if scale < 0.999:
+            resized_width = max(1, int(candidate.width * scale))
+            resized_height = max(1, int(candidate.height * scale))
+            candidate = candidate.resize((resized_width, resized_height), Image.Resampling.LANCZOS)
+
+        for quality in quality_steps:
+            buffer = io.BytesIO()
+            candidate.save(buffer, format="JPEG", quality=quality, optimize=True)
+            encoded_bytes = buffer.getvalue()
+            if best_bytes is None or len(encoded_bytes) < len(best_bytes):
+                best_bytes = encoded_bytes
+            if len(encoded_bytes) <= max_bytes:
+                return encoded_bytes, best_mime_type
+
+    if best_bytes is None:
+        raise SystemExit(f"Unable to compress poster for upload: {image_path}")
+    return best_bytes, best_mime_type
+
+
+def to_data_uri(image_path: str, max_bytes: int) -> str:
+    image_bytes, mime_type = compress_image_for_upload(image_path, max_bytes=max_bytes)
+    encoded = base64.b64encode(image_bytes).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"
 
 
@@ -411,6 +479,8 @@ def resolve_poster_assets(
                 base_url=args.ai_base_url,
                 max_tokens=args.poster_image_max_tokens,
                 timeout=args.poster_image_timeout,
+                retries=args.poster_image_retries,
+                retry_delay=args.poster_image_retry_delay,
             )
 
         poster_file = str(poster_output_path(args.input, route_name))
@@ -426,6 +496,7 @@ def resolve_poster_assets(
         "poster_file": str(poster_file) if poster_file else None,
         "poster_right_image": str(poster_right_image) if poster_right_image else None,
         "poster_body_url": str(poster_body_url) if poster_body_url else None,
+        "poster_body_inline": "true" if args.poster_body_inline else None,
     }
 
 
@@ -454,9 +525,15 @@ def merge_metadata(frontmatter: dict[str, Any], args: argparse.Namespace, body: 
     poster = assets["poster"]
     poster_file = assets["poster_file"]
     poster_body_url = assets["poster_body_url"]
+    poster_body_inline = assets["poster_body_inline"] == "true"
     if poster_file:
-        poster = to_data_uri(str(poster_file))
+        poster_max_bytes = args.poster_upload_max_bytes
+        if poster_body_inline:
+            poster_max_bytes = min(poster_max_bytes, DEFAULT_POSTER_INLINE_MAX_BYTES)
+        poster = to_data_uri(str(poster_file), max_bytes=poster_max_bytes)
     poster = normalize_poster_value(poster)
+    if poster_body_inline and not poster_body_url and isinstance(poster, str) and poster.startswith("data:"):
+        poster_body_url = poster
     if not poster_body_url and isinstance(poster, str) and poster.startswith(("http://", "https://")):
         poster_body_url = poster
     poster_alt_text = build_poster_alt_text(title, seo_keys)
@@ -517,12 +594,22 @@ def build_prepare_summary(frontmatter: dict[str, Any], args: argparse.Namespace,
             "poster_right_image": assets["poster_right_image"],
             "poster_file": assets["poster_file"],
             "poster_body_url": assets["poster_body_url"],
+            "poster_body_inline": assets["poster_body_inline"],
             "status": "Poster assets ready. Review the poster with the user before rerunning without --prepare-only.",
         }
     )
 
 
-def send_request(api_url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+def build_ssl_context(api_url: str, insecure: bool) -> ssl.SSLContext | None:
+    if not insecure or not api_url.startswith("https://"):
+        return None
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+
+def send_request(api_url: str, payload: dict[str, Any], timeout: int, insecure: bool = False) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         api_url,
@@ -530,8 +617,9 @@ def send_request(api_url: str, payload: dict[str, Any], timeout: int) -> dict[st
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    context = build_ssl_context(api_url, insecure=insecure)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -563,7 +651,7 @@ def main() -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
 
-    response = send_request(args.api_url, payload, args.timeout)
+    response = send_request(args.api_url, payload, args.timeout, insecure=args.insecure)
     print(json.dumps(response, ensure_ascii=False, indent=2))
 
 

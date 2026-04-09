@@ -16,6 +16,7 @@ import os
 import re
 import tempfile
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -32,6 +33,8 @@ DEFAULT_IMAGE_ASPECT_RATIO = "4:5"
 DEFAULT_IMAGE_QUALITY = "standard"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_VENUS_TOKEN_SUFFIX = "@3701"
+DEFAULT_IMAGE_RETRIES = 2
+DEFAULT_IMAGE_RETRY_DELAY = 3.0
 
 TITLE_COVER_BOX = (36, 250, 430, 250)
 TITLE_TEXT_BOX = (58, 286, 350, 220)
@@ -174,12 +177,14 @@ def build_scene_prompt(
     excerpt = summarize_body_for_prompt(body)
     keywords = normalize_whitespace((seo_keys or "").replace(",", ", "))
     prompt_parts = [
-        "Create a premium editorial scene illustration for the right-side image area of a technology blog poster.",
+        "Create a premium lifestyle editorial scene for the right-side image area of a technology blog poster.",
         "The final image will be cropped into a tall rounded rectangle, so keep the main subject centered with safe margins.",
         "Do not include any text, letters, captions, logos, UI screenshots, or watermarks.",
-        "Use a polished, modern, high-end visual style suited to Tencent RTC product marketing.",
-        "Favor cinematic lighting, realistic or refined 3D details, and a clean composition that reads clearly at poster size.",
-        "Use colors that complement a deep blue technology background, especially cyan, teal, navy, white, and subtle purple accents.",
+        "Use a polished, modern, human-centered visual style suited to Tencent RTC product marketing.",
+        "Favor realistic photography-inspired or lightly stylized editorial art, natural people, believable environments, and emotionally warm composition.",
+        "Prefer real-life usage scenes such as conferences, meetings, livestream viewing, classrooms, or global collaboration moments instead of abstract sci-fi concepts.",
+        "Keep technology cues subtle and supportive. Avoid futuristic holograms, glowing AI brains, floating chat bubbles, fantasy interfaces, or generic sci-fi spectacle.",
+        "Use colors that complement a deep blue technology background, especially cyan, teal, navy, white, and soft neutral tones.",
         f"Article title: {title}.",
     ]
     if description:
@@ -261,7 +266,7 @@ def extract_image_bytes_from_venus_response(data: dict[str, object]) -> bytes:
             if isinstance(encoded, str) and encoded.strip():
                 return base64.b64decode(encoded)
 
-    raise SystemExit("Venus image model did not return an image payload.")
+    raise ValueError("Venus image model did not return an image payload.")
 
 
 def generate_ai_right_image(
@@ -279,6 +284,8 @@ def generate_ai_right_image(
     base_url: str = DEFAULT_VENUS_BASE_URL,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     timeout: int = 90,
+    retries: int = DEFAULT_IMAGE_RETRIES,
+    retry_delay: float = DEFAULT_IMAGE_RETRY_DELAY,
 ) -> tuple[Path, str]:
     resolved_key = resolve_venus_token(api_key)
     if not resolved_key:
@@ -320,26 +327,42 @@ def generate_ai_right_image(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode("utf-8", errors="replace")
+    last_error: str | None = None
+    for attempt in range(retries + 1):
         try:
-            parsed = json.loads(body_text)
-        except json.JSONDecodeError:
-            parsed = {"error": {"message": body_text or str(exc)}}
-        raise SystemExit(json.dumps(parsed, ensure_ascii=False, indent=2))
-    except urllib.error.URLError as exc:
-        raise SystemExit(
-            f"Network error while generating the AI poster scene: {exc.reason}. "
-            "If this environment blocks outbound access, rerun with escalated permissions."
-        )
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
 
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_bytes(extract_image_bytes_from_venus_response(data))
-    return output, prompt
+            output = Path(output_path)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(extract_image_bytes_from_venus_response(data))
+            return output, prompt
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(body_text)
+            except json.JSONDecodeError:
+                parsed = {"error": {"message": body_text or str(exc)}}
+            last_error = json.dumps(parsed, ensure_ascii=False, indent=2)
+            if exc.code not in {408, 425, 429, 500, 502, 503, 504} or attempt >= retries:
+                raise SystemExit(last_error)
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            message = getattr(exc, "reason", str(exc))
+            last_error = str(message)
+            if attempt >= retries:
+                raise SystemExit(
+                    "AI poster scene generation failed after retries. "
+                    f"Last error: {last_error}. "
+                    "Retry later or provide --right-image / --poster-right-image as a manual fallback."
+                )
+
+        time.sleep(retry_delay)
+
+    raise SystemExit(
+        "AI poster scene generation failed unexpectedly. "
+        f"Last error: {last_error or 'unknown error'}. "
+        "Retry later or provide --right-image / --poster-right-image as a manual fallback."
+    )
 
 
 def render_poster(title: str, right_image_path: str | Path, output_path: str | Path, template_path: str | Path = DEFAULT_TEMPLATE) -> Path:
@@ -398,6 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-quality", default=DEFAULT_IMAGE_QUALITY, help="Reserved image quality field for prompt labeling.")
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS, help="Max output tokens for Venus image generation.")
     parser.add_argument("--timeout", type=int, default=90, help="HTTP timeout for AI scene generation.")
+    parser.add_argument("--retries", type=int, default=DEFAULT_IMAGE_RETRIES, help="Retry count for Venus image generation.")
+    parser.add_argument("--retry-delay", type=float, default=DEFAULT_IMAGE_RETRY_DELAY, help="Delay in seconds between Venus image retries.")
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="Output PNG path.")
     parser.add_argument("--template", default=str(DEFAULT_TEMPLATE), help="Template PNG path.")
     return parser
@@ -432,6 +457,8 @@ def main() -> None:
             base_url=args.ai_base_url,
             max_tokens=args.max_tokens,
             timeout=args.timeout,
+            retries=args.retries,
+            retry_delay=args.retry_delay,
         )
 
     output = render_poster(
