@@ -351,18 +351,6 @@ def build_poster_alt_text(title: str, seo_keys: str | None) -> str:
     return f"{title} cover image"
 
 
-def promote_heading_levels(body: str) -> str:
-    promoted_lines: list[str] = []
-    for line in body.splitlines():
-        if line.startswith("### "):
-            promoted_lines.append(f"## {line[4:]}")
-        elif line.startswith("## "):
-            promoted_lines.append(f"# {line[3:]}")
-        else:
-            promoted_lines.append(line)
-    return "\n".join(promoted_lines)
-
-
 def strip_leading_title(body: str, title: str) -> tuple[str, bool]:
     lines = body.splitlines()
     if not lines:
@@ -421,9 +409,7 @@ def resolve_article_metadata(
         raise SystemExit("route_name is required and could not be generated from title.")
     validate_route_name(route_name)
 
-    body, removed_title = strip_leading_title(body, title)
-    if removed_title:
-        body = promote_heading_levels(body)
+    body, _removed_title = strip_leading_title(body, title)
 
     language = args.language or frontmatter.get("language") or "English"
     validate_language(language)

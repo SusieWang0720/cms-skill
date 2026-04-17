@@ -135,6 +135,7 @@ The script will:
 - Retry Venus image generation automatically before giving up, then suggest `poster_right_image` as the graceful fallback
 - Support a two-step confirmation flow through `--prepare-only`: first generate the scene and poster assets, show them to the user, then rerun the import after the user confirms the image is acceptable
 - Remove the article H1 from `rich_content` so the title does not appear twice
+- Keep body headings at their original lower levels after removing the H1. The article title belongs in CMS `title`; `rich_content` should start from the body and keep `##` / `###` headings instead of introducing a new H1
 - Insert the poster once at the top of `rich_content` before the article body begins when `poster_body_url` is provided
 - Support a best-effort one-shot body cover through `--poster-body-inline` when no hosted `poster_body_url` is available yet
 - Use the article title and SEO keywords to generate a meaningful body-image alt text instead of leaving the image description blank
@@ -147,7 +148,7 @@ The script will:
 3. Prepare a Markdown file with frontmatter, or supply metadata as CLI flags.
 4. Ensure the article has a poster. Prefer the built-in AI scene generation so the script can create the right-side visual from the article context and then compose the final poster from the reference template.
 5. Keep the poster filename human-readable and keyword-rich. Prefer the article slug plus `-poster.png`.
-6. Ensure the body content starts with the poster image URL and then the article body, without repeating the title as an H1.
+6. Ensure the body content starts with the poster image URL and then the article body, without repeating the title as an H1. The body should keep second-level and third-level headings rather than creating a new first-level heading.
 7. Run the script with `--prepare-only` first to generate the poster and pause for user confirmation.
 8. Show the generated poster to the user and wait until the user says the image is OK.
 9. Rerun the script without `--prepare-only`. Pass the generated `poster_file` if needed so the approved image is reused.
