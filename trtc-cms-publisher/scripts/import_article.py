@@ -65,9 +65,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--author", help="Author name.")
     parser.add_argument("--published-at", help="ISO 8601 publish time.")
     parser.add_argument(
+        "--allow-publish",
+        action="store_true",
+        help="Explicitly allow sending a published article. Required together with --published-at or --publish-now.",
+    )
+    parser.add_argument(
         "--publish-now",
         action="store_true",
-        help="Publish immediately with the current UTC timestamp when publishedAt is missing.",
+        help="Publish immediately with the current UTC timestamp when publishedAt is missing. Requires --allow-publish.",
     )
     parser.add_argument("--poster", help="Poster as base64 or a data URI string.")
     parser.add_argument("--poster-file", help="Path to a local poster image file.")
@@ -423,6 +428,11 @@ def resolve_article_metadata(
     labels.extend(args.label)
 
     published_at = args.published_at or frontmatter.get("publishedAt")
+    if (published_at or args.publish_now) and not args.allow_publish:
+        raise SystemExit(
+            "Publishing is blocked by default. Remove publishedAt/--publish-now for a draft, "
+            "or rerun with --allow-publish to confirm a live publish."
+        )
     if args.publish_now and not published_at:
         published_at = iso_now()
 

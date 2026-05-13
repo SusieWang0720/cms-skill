@@ -113,6 +113,7 @@ Supported frontmatter keys:
 - `labels`
 - `author`
 - `publishedAt`
+  Only use this when the user explicitly wants to publish immediately. The script now blocks all publish attempts unless `--allow-publish` is passed.
 - `poster`
 - `poster_file`
 - `poster_right_image`
@@ -140,6 +141,7 @@ The script will:
 - Support a best-effort one-shot body cover through `--poster-body-inline` when no hosted `poster_body_url` is available yet
 - Use the article title and SEO keywords to generate a meaningful body-image alt text instead of leaving the image description blank
 - Save as a draft by default when `publishedAt` is omitted
+- Refuse all publish attempts by default. If `publishedAt` or `--publish-now` is present, the operator must also pass `--allow-publish` or the script will stop before sending the request
 
 ## Workflow
 
@@ -171,6 +173,7 @@ Publish immediately with the current UTC time:
 python3 /Users/wangshuoxin/Claude-Internal/CMS/trtc-cms-publisher/scripts/import_article.py \
   --input /absolute/path/to/article.md \
   --poster-right-image /absolute/path/to/right-image.png \
+  --allow-publish \
   --publish-now
 ```
 
@@ -181,6 +184,7 @@ VENUS_API_KEY=your_venus_token_here \
 python3 /Users/wangshuoxin/Claude-Internal/CMS/trtc-cms-publisher/scripts/import_article.py \
   --input /absolute/path/to/article.md \
   --poster-scene-prompt "A polished multilingual conference scene with real-time translation flowing across devices" \
+  --allow-publish \
   --publish-now
 ```
 
@@ -232,6 +236,7 @@ python3 /Users/wangshuoxin/Claude-Internal/CMS/trtc-cms-publisher/scripts/import
 
 - Default API URL: `https://trtc-cms.woa.com/api/import/article`
 - No authentication is required according to the API doc.
+- Draft is the safe default. The script will refuse any live publish unless `--allow-publish` is passed together with `publishedAt` or `--publish-now`.
 - Poster scene generation now defaults to Tencent Venus: `http://v2.open.venus.oa.com/llmproxy/chat/completions`
 - The default image model is `gemini-3-pro-image`. If your应用组要求使用其他公共模型 `modelid`，请直接通过 `--poster-image-model` 传入模型列表里的 `model` 字段。
 - Venus token can come from `VENUS_API_KEY` or `VENUS_TOKEN`.
